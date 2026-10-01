@@ -70,7 +70,7 @@ def progress_percent() -> float:
 
 def write_status() -> None:
     TIMER_FILE.write_text(format_remaining(), encoding="utf-8")
-    PROGRESS_FILE.write_text(f"{progress_percent():.1f}%", encoding="utf-8")
+    PROGRESS_FILE.write_text(f"{progress_percent():.1f}", encoding="utf-8")
 
 
 def find_call(obj):
@@ -152,19 +152,19 @@ def ffmpeg_cmd(url: str, key: str):
         "-f",
         "lavfi",
         "-i",
-        "sine=frequency=261.63:sample_rate=44100:duration=3600",
+        "sine=frequency=261.63:sample_rate=44100",
         "-f",
         "lavfi",
         "-i",
-        "sine=frequency=329.63:sample_rate=44100:duration=3600",
+        "sine=frequency=329.63:sample_rate=44100",
         "-f",
         "lavfi",
         "-i",
-        "sine=frequency=392.00:sample_rate=44100:duration=3600",
+        "sine=frequency=392.00:sample_rate=44100",
         "-f",
         "lavfi",
         "-i",
-        "sine=frequency=523.25:sample_rate=44100:duration=3600",
+        "sine=frequency=523.25:sample_rate=44100",
         "-filter_complex",
         f"[0:v]{vf}[v];{audio}",
         "-map",
@@ -238,7 +238,9 @@ async def start_live():
 
     if live_call is None:
         stories = await client(functions.stories.GetPeerStoriesRequest(peer=peer))
-        for item in stories.stories:
+        peer_stories = getattr(stories, "stories", stories)
+        items = getattr(peer_stories, "stories", peer_stories)
+        for item in items:
             media = getattr(item, "media", None)
             if isinstance(media, types.MessageMediaVideoStream):
                 live_call = media.call
