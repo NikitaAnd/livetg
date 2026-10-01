@@ -8,9 +8,11 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telethon import TelegramClient, functions, types
+from telethon.sessions import StringSession
 
 load_dotenv()
 API_ID=int(os.environ["TG_API_ID"]); API_HASH=os.environ["TG_API_HASH"]
+SESSION_STRING=os.getenv("TG_SESSION_STRING","").strip()
 SESSION=os.getenv("TG_SESSION","demob_user")
 DEMOB_DATE=os.getenv("DEMOB_DATE","2026-10-15T00:00:00+03:00")
 TZ=ZoneInfo(os.getenv("TZ","Europe/Moscow"))
@@ -20,7 +22,12 @@ FPS=int(os.getenv("VIDEO_FPS","30")); BITRATE=os.getenv("VIDEO_BITRATE","1200k")
 PRESET=os.getenv("VIDEO_PRESET","veryfast")
 DATA=Path("data"); RUNTIME=Path("runtime"); DATA.mkdir(exist_ok=True); RUNTIME.mkdir(exist_ok=True)
 TIMER_FILE=RUNTIME/"timer.txt"
-client=TelegramClient(str(DATA/SESSION),API_ID,API_HASH)
+
+if SESSION_STRING:
+    client=TelegramClient(StringSession(SESSION_STRING),API_ID,API_HASH)
+else:
+    client=TelegramClient(str(DATA/SESSION),API_ID,API_HASH)
+
 ffmpeg_process=None; live_call=None; stop_event=asyncio.Event()
 
 def demob_dt():
@@ -110,6 +117,10 @@ async def stop_all():
 async def main():
     await client.start(); me=await client.get_me()
     print(f"Telegram: id={me.id} username=@{me.username or '-'}",flush=True)
+    if SESSION_STRING:
+        print("Telegram session loaded from TG_SESSION_STRING",flush=True)
+    else:
+        print("WARNING: TG_SESSION_STRING is not set; interactive login may fail on Railway",flush=True)
     loop=asyncio.get_running_loop()
     for sig in (signal.SIGINT,signal.SIGTERM):
         try: loop.add_signal_handler(sig,lambda:asyncio.create_task(stop_all()))
