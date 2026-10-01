@@ -16,7 +16,7 @@ SESSION_STRING=os.getenv("TG_SESSION_STRING","").strip()
 SESSION=os.getenv("TG_SESSION","demob_user")
 DEMOB_DATE=os.getenv("DEMOB_DATE","2026-10-15T00:00:00+03:00")
 TZ=ZoneInfo(os.getenv("TZ","Europe/Moscow"))
-CAPTION=os.getenv("LIVE_CAPTION","🔥 ФИНИШНАЯ ПРЯМАЯ — СЧЁТЧИК ДО ДЕМБЕЛЯ")
+CAPTION=os.getenv("LIVE_CAPTION","").strip() or "🔥 ФИНИШНАЯ ПРЯМАЯ — СЧЁТЧИК ДО ДЕМБЕЛЯ"
 WIDTH=int(os.getenv("VIDEO_WIDTH","1280")); HEIGHT=int(os.getenv("VIDEO_HEIGHT","720"))
 FPS=int(os.getenv("VIDEO_FPS","30")); BITRATE=os.getenv("VIDEO_BITRATE","1200k")
 PRESET=os.getenv("VIDEO_PRESET","veryfast")
@@ -81,7 +81,7 @@ async def start_live():
     global live_call
     peer=await client.get_input_entity("me")
     result=await client(functions.stories.StartLiveRequest(
-        peer=peer,rtmp_stream=True,pinned=False,noforwards=False,caption=CAPTION,
+        peer=peer,rtmp_stream=True,pinned=False,noforwards=False,caption=CAPTION or None,
         privacy_rules=[types.InputPrivacyValueAllowAll()],
         random_id=random.randint(1,2**63-1),messages_enabled=True))
     live_call=find_call(result)
