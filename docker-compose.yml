@@ -1,0 +1,10 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: [.env]
+    volumes:
+      - ./data:/app/data
+      - ./runtime:/app/runtime
+    stop_grace_period: 20s
+    init: true
