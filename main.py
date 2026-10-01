@@ -92,7 +92,12 @@ def find_call(obj):
 
 
 def ffmpeg_cmd(url: str, key: str):
-    base = url.rstrip("/")\n    if base.startswith("rtmps://") and ":443/" not in base:\n        base = base.replace("rtmps://", "rtmps://", 1)\n        host, path = base[8:].split("/", 1)\n        if ":" not in host:\n            base = f"rtmps://{host}:443/{path}"\n    out = f"{base}/{key}"
+    base = url.rstrip("/")
+    if base.startswith("rtmps://") and ":443/" not in base:
+        host, path = base[8:].split("/", 1)
+        if ":" not in host:
+            base = f"rtmps://{host}:443/{path}"
+    out = f"{base}/{key}"
     total_seconds = max(
         1,
         int((parse_dt(DEMOB_DATE) - parse_dt(SERVICE_START)).total_seconds()),
