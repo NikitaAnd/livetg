@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 import random
 import signal
@@ -11,124 +12,313 @@ from telethon import TelegramClient, functions, types
 from telethon.sessions import StringSession
 
 load_dotenv()
-API_ID=int(os.environ["TG_API_ID"]); API_HASH=os.environ["TG_API_HASH"]
-SESSION_STRING=os.getenv("TG_SESSION_STRING","").strip()
-SESSION=os.getenv("TG_SESSION","demob_user")
-DEMOB_DATE=os.getenv("DEMOB_DATE","2026-10-15T00:00:00+03:00")
-TZ=ZoneInfo(os.getenv("TZ","Europe/Moscow"))
-CAPTION=os.getenv("LIVE_CAPTION","").strip() or "🔥 ФИНИШНАЯ ПРЯМАЯ — СЧЁТЧИК ДО ДЕМБЕЛЯ"
-WIDTH=int(os.getenv("VIDEO_WIDTH","1280")); HEIGHT=int(os.getenv("VIDEO_HEIGHT","720"))
-FPS=int(os.getenv("VIDEO_FPS","30")); BITRATE=os.getenv("VIDEO_BITRATE","1200k")
-PRESET=os.getenv("VIDEO_PRESET","veryfast")
-DATA=Path("data"); RUNTIME=Path("runtime"); DATA.mkdir(exist_ok=True); RUNTIME.mkdir(exist_ok=True)
-TIMER_FILE=RUNTIME/"timer.txt"
+
+API_ID = int(os.environ["TG_API_ID"])
+API_HASH = os.environ["TG_API_HASH"]
+SESSION_STRING = os.getenv("TG_SESSION_STRING", "").strip()
+SESSION = os.getenv("TG_SESSION", "demob_user")
+
+SERVICE_START = os.getenv("SERVICE_START", "2025-10-15T00:00:00+03:00")
+DEMOB_DATE = os.getenv("DEMOB_DATE", "2026-10-15T00:00:00+03:00")
+TZ = ZoneInfo(os.getenv("TZ", "Europe/Moscow"))
+
+WIDTH = int(os.getenv("VIDEO_WIDTH", "1280"))
+HEIGHT = int(os.getenv("VIDEO_HEIGHT", "720"))
+FPS = int(os.getenv("VIDEO_FPS", "30"))
+BITRATE = os.getenv("VIDEO_BITRATE", "1800k")
+PRESET = os.getenv("VIDEO_PRESET", "veryfast")
+MUSIC_VOLUME = float(os.getenv("MUSIC_VOLUME", "0.12"))
+
+DATA = Path("data")
+RUNTIME = Path("runtime")
+DATA.mkdir(exist_ok=True)
+RUNTIME.mkdir(exist_ok=True)
+
+TIMER_FILE = RUNTIME / "timer.txt"
+PROGRESS_FILE = RUNTIME / "progress.txt"
 
 if SESSION_STRING:
-    client=TelegramClient(StringSession(SESSION_STRING),API_ID,API_HASH)
+    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 else:
-    client=TelegramClient(str(DATA/SESSION),API_ID,API_HASH)
+    client = TelegramClient(str(DATA / SESSION), API_ID, API_HASH)
 
-ffmpeg_process=None; live_call=None; stop_event=asyncio.Event()
+ffmpeg_process = None
+live_call = None
+stop_event = asyncio.Event()
 
-def demob_dt():
-    dt=datetime.fromisoformat(DEMOB_DATE)
+
+def parse_dt(value: str) -> datetime:
+    dt = datetime.fromisoformat(value)
     return dt if dt.tzinfo else dt.replace(tzinfo=TZ)
 
-def format_remaining():
-    s=max(0,int((demob_dt()-datetime.now(demob_dt().tzinfo)).total_seconds()))
-    d,s=divmod(s,86400); h,s=divmod(s,3600); m,s=divmod(s,60)
-    return f"{d:02d} ДНЕЙ  {h:02d}:{m:02d}:{s:02d}"
 
-def write_timer():
-    tmp=TIMER_FILE.with_suffix(".tmp"); tmp.write_text(format_remaining(),encoding="utf-8"); tmp.replace(TIMER_FILE)
+def format_remaining() -> str:
+    remaining = max(0, int((parse_dt(DEMOB_DATE) - datetime.now(parse_dt(DEMOB_DATE).tzinfo)).total_seconds()))
+    days, remaining = divmod(remaining, 86400)
+    hours, remaining = divmod(remaining, 3600)
+    minutes, seconds = divmod(remaining, 60)
+    return f"{days:02d} ДНЕЙ  {hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def progress_percent() -> float:
+    start = parse_dt(SERVICE_START)
+    end = parse_dt(DEMOB_DATE)
+    total = max(1.0, (end - start).total_seconds())
+    done = (datetime.now(end.tzinfo) - start).total_seconds()
+    return min(100.0, max(0.0, done / total * 100.0))
+
+
+def write_status() -> None:
+    TIMER_FILE.write_text(format_remaining(), encoding="utf-8")
+    PROGRESS_FILE.write_text(f"{progress_percent():.1f}%", encoding="utf-8")
+
 
 def find_call(obj):
-    if isinstance(obj,types.InputGroupCall): return obj
-    if isinstance(obj,types.MessageMediaVideoStream): return obj.call
-    if isinstance(obj,(list,tuple)):
-        for x in obj:
-            r=find_call(x)
-            if r:return r
-    if hasattr(obj,"__dict__"):
-        for x in vars(obj).values():
-            r=find_call(x)
-            if r:return r
+    if isinstance(obj, types.InputGroupCall):
+        return obj
+    if isinstance(obj, types.MessageMediaVideoStream):
+        return obj.call
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            found = find_call(item)
+            if found:
+                return found
+    if hasattr(obj, "__dict__"):
+        for item in vars(obj).values():
+            found = find_call(item)
+            if found:
+                return found
     return None
 
-def ffmpeg_cmd(url,key):
-    out=f"{url.rstrip('/')}/{key}"
-    vf=("drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        "text='ДО ДЕМБЕЛЯ':fontcolor=white:fontsize=70:x=(w-text_w)/2:y=150,"
+
+def ffmpeg_cmd(url: str, key: str):
+    out = f"{url.rstrip('/')}/{key}"
+    total_seconds = max(
+        1,
+        int((parse_dt(DEMOB_DATE) - parse_dt(SERVICE_START)).total_seconds()),
+    )
+
+    # A clean animated card: dark background, subtle moving grid, progress bar,
+    # countdown and a small "LIVE" badge. The audio is an original synthetic
+    # ambient progression generated by FFmpeg, so no external music file is needed.
+    vf = (
+        "drawbox=x=0:y=0:w=iw:h=ih:color=#080b12@1:t=fill,"
+        "drawbox=x=70:y=60:w=iw-140:h=600:color=#111827@0.72:t=fill,"
+        "drawbox=x=90:y=80:w=iw-180:h=560:color=#0b1220@0.92:t=fill,"
+        "drawbox=x=92:y=82:w=iw-184:h=3:color=#b2fa72@0.75:t=fill,"
+        "drawbox=x=92:y=637:w=iw-184:h=2:color=#b4a1ff@0.35:t=fill,"
         "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        "textfile=/app/runtime/timer.txt:reload=1:fontcolor=white:fontsize=82:x=(w-text_w)/2:y=260,"
+        "text='●  LIVE':fontcolor=#ff5f56:fontsize=24:x=105:y=105,"
         "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        "text='15.10.2026':fontcolor=white:fontsize=40:x=(w-text_w)/2:y=390,"
+        "text='ДО ДЕМБЕЛЯ':fontcolor=white:fontsize=58:x=(w-text_w)/2:y=155,"
         "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        "text='ФИНИШНАЯ ПРЯМАЯ':fontcolor=#b2fa72:fontsize=44:x=(w-text_w)/2:y=510")
-    return ["ffmpeg","-hide_banner","-loglevel","warning","-re","-f","lavfi","-i",f"color=c=#090c10:s={WIDTH}x{HEIGHT}:r={FPS}",
-            "-f","lavfi","-i","anullsrc=channel_layout=stereo:sample_rate=44100","-vf",vf,
-            "-map","0:v:0","-map","1:a:0","-c:v","libx264","-preset",PRESET,"-tune","zerolatency",
-            "-pix_fmt","yuv420p","-r",str(FPS),"-g",str(FPS*2),"-b:v",BITRATE,"-maxrate",BITRATE,"-bufsize","3M",
-            "-c:a","aac","-b:a","96k","-ar","44100","-ac","2","-f","flv",out]
+        "textfile=/app/runtime/timer.txt:reload=1:fontcolor=white:fontsize=72:"
+        "x=(w-text_w)/2:y=245,"
+        "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+        "text='15 ОКТЯБРЯ 2026':fontcolor=#aeb8ca:fontsize=28:x=(w-text_w)/2:y=340,"
+        f"drawbox=x=150:y=405:w=980:h=14:color=#273044@1:t=fill,"
+        f"drawbox=x=150:y=405:w='980*min(max(t/{total_seconds},0),1)':h=14:"
+        "color=#b2fa72@1:t=fill,"
+        "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+        "textfile=/app/runtime/progress.txt:reload=1:fontcolor=#b2fa72:fontsize=23:"
+        "x=(w-text_w)/2:y=440,"
+        "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+        "text='ФИНИШНАЯ ПРЯМАЯ':fontcolor=#b2fa72:fontsize=40:x=(w-text_w)/2:y=515,"
+        "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+        "text='до дома осталось совсем немного':fontcolor=#77839a:fontsize=22:"
+        "x=(w-text_w)/2:y=570"
+    )
+
+    # Original ambient "music": layered soft notes/chords, generated locally.
+    audio = (
+        "[1:a]volume=0.70[a1];"
+        "[2:a]volume=0.48[a2];"
+        "[3:a]volume=0.34[a3];"
+        "[4:a]volume=0.24[a4];"
+        "[a1][a2][a3][a4]amix=inputs=4:duration=longest,"
+        f"lowpass=f=1800,volume={MUSIC_VOLUME}[music]"
+    )
+
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-re",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c=#080b12:s={WIDTH}x{HEIGHT}:r={FPS}",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=261.63:sample_rate=44100:duration=3600",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=329.63:sample_rate=44100:duration=3600",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=392.00:sample_rate=44100:duration=3600",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=523.25:sample_rate=44100:duration=3600",
+        "-filter_complex",
+        f"[0:v]{vf}[v];{audio}",
+        "-map",
+        "[v]",
+        "-map",
+        "[music]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        PRESET,
+        "-tune",
+        "zerolatency",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        str(FPS),
+        "-g",
+        str(FPS * 2),
+        "-b:v",
+        BITRATE,
+        "-maxrate",
+        BITRATE,
+        "-bufsize",
+        "3M",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
+        "-f",
+        "flv",
+        out,
+    ]
+
 
 async def timer_writer():
     while not stop_event.is_set():
-        write_timer()
-        try: await asyncio.wait_for(stop_event.wait(),timeout=1)
-        except asyncio.TimeoutError: pass
+        write_status()
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=1)
+        except asyncio.TimeoutError:
+            pass
+
 
 async def start_live():
     global live_call
-    peer=await client.get_input_entity("me")
-    result=await client(functions.stories.StartLiveRequest(
-        peer=peer,rtmp_stream=True,pinned=False,noforwards=False,
-        privacy_rules=[types.InputPrivacyValueAllowAll()],
-        random_id=random.randint(1,2**63-1),messages_enabled=True))
-    live_call=find_call(result)
-    if live_call is None:
-        stories=await client(functions.stories.GetPeerStoriesRequest(peer=peer))
-        for item in stories.stories:
-            if isinstance(getattr(item,"media",None),types.MessageMediaVideoStream):
-                live_call=item.media.call; break
-    if live_call is None: raise RuntimeError("InputGroupCall не найден после stories.startLive")
-    creds=await client(functions.phone.GetGroupCallStreamRtmpUrlRequest(peer=peer,revoke=False,live_story=True))
-    return creds.url,creds.key
 
-async def stream(url,key):
+    peer = await client.get_input_entity("me")
+
+    try:
+        result = await client(
+            functions.stories.StartLiveRequest(
+                peer=peer,
+                rtmp_stream=True,
+                pinned=False,
+                noforwards=False,
+                privacy_rules=[types.InputPrivacyValueAllowAll()],
+                random_id=random.randint(1, 2**63 - 1),
+                messages_enabled=True,
+            )
+        )
+        live_call = find_call(result)
+    except Exception as exc:
+        # If the service restarted while the Live Story was still active,
+        # reuse that story instead of creating another one.
+        if "STORY_LIVE_ALREADY_" not in str(exc):
+            raise
+
+    if live_call is None:
+        stories = await client(functions.stories.GetPeerStoriesRequest(peer=peer))
+        for item in stories.stories:
+            media = getattr(item, "media", None)
+            if isinstance(media, types.MessageMediaVideoStream):
+                live_call = media.call
+                break
+
+    if live_call is None:
+        raise RuntimeError("InputGroupCall не найден после stories.startLive")
+
+    creds = await client(
+        functions.phone.GetGroupCallStreamRtmpUrlRequest(
+            peer=peer,
+            revoke=False,
+            live_story=True,
+        )
+    )
+    return creds.url, creds.key
+
+
+async def stream(url: str, key: str):
     global ffmpeg_process
+
     while not stop_event.is_set():
-        write_timer()
-        ffmpeg_process=await asyncio.create_subprocess_exec(*ffmpeg_cmd(url,key))
-        code=await ffmpeg_process.wait(); ffmpeg_process=None
+        write_status()
+        print("Starting FFmpeg stream", flush=True)
+        ffmpeg_process = await asyncio.create_subprocess_exec(*ffmpeg_cmd(url, key))
+        code = await ffmpeg_process.wait()
+        ffmpeg_process = None
+
         if not stop_event.is_set():
-            print(f"FFmpeg exited {code}; restarting",flush=True); await asyncio.sleep(3)
+            print(f"FFmpeg exited with code {code}; restarting in 3s", flush=True)
+            await asyncio.sleep(3)
+
 
 async def stop_all():
     stop_event.set()
+
     global ffmpeg_process
     if ffmpeg_process and ffmpeg_process.returncode is None:
         ffmpeg_process.terminate()
-        try: await asyncio.wait_for(ffmpeg_process.wait(),10)
-        except asyncio.TimeoutError: ffmpeg_process.kill(); await ffmpeg_process.wait()
+        try:
+            await asyncio.wait_for(ffmpeg_process.wait(), 10)
+        except asyncio.TimeoutError:
+            ffmpeg_process.kill()
+            await ffmpeg_process.wait()
+
     if live_call is not None:
-        try: await client(functions.phone.DiscardGroupCallRequest(call=live_call))
-        except Exception as e: print(f"Live close error: {e}",flush=True)
+        try:
+            await client(functions.phone.DiscardGroupCallRequest(call=live_call))
+        except Exception as exc:
+            print(f"Live close error: {exc}", flush=True)
+
 
 async def main():
-    await client.start(); me=await client.get_me()
-    print(f"Telegram: id={me.id} username=@{me.username or '-'}",flush=True)
-    if SESSION_STRING:
-        print("Telegram session loaded from TG_SESSION_STRING",flush=True)
-    else:
-        print("WARNING: TG_SESSION_STRING is not set; interactive login may fail on Railway",flush=True)
-    loop=asyncio.get_running_loop()
-    for sig in (signal.SIGINT,signal.SIGTERM):
-        try: loop.add_signal_handler(sig,lambda:asyncio.create_task(stop_all()))
-        except NotImplementedError: pass
-    task=asyncio.create_task(timer_writer())
-    try:
-        url,key=await start_live(); print("Live Story active; starting FFmpeg",flush=True); await stream(url,key)
-    finally:
-        task.cancel(); await stop_all(); await client.disconnect()
+    await client.start()
+    me = await client.get_me()
+    print(f"Telegram: id={me.id} username=@{me.username or '-'}", flush=True)
 
-if __name__=="__main__": asyncio.run(main())
+    if SESSION_STRING:
+        print("Telegram session loaded from TG_SESSION_STRING", flush=True)
+    else:
+        print("WARNING: TG_SESSION_STRING is not set; interactive login may fail on Railway", flush=True)
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(stop_all()))
+        except NotImplementedError:
+            pass
+
+    task = asyncio.create_task(timer_writer())
+
+    try:
+        url, key = await start_live()
+        print("Live Story active; starting FFmpeg", flush=True)
+        await stream(url, key)
+    finally:
+        task.cancel()
+        await stop_all()
+        await client.disconnect()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
