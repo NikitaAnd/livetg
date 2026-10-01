@@ -81,7 +81,7 @@ async def start_live():
     global live_call
     peer=await client.get_input_entity("me")
     result=await client(functions.stories.StartLiveRequest(
-        peer=peer,rtmp_stream=True,pinned=False,noforwards=False,caption=CAPTION or None,
+        peer=peer,rtmp_stream=True,pinned=False,noforwards=False,
         privacy_rules=[types.InputPrivacyValueAllowAll()],
         random_id=random.randint(1,2**63-1),messages_enabled=True))
     live_call=find_call(result)
