@@ -165,7 +165,7 @@ def ffmpeg_cmd(url: str, key: str):
         "text='ДОМА БУДЕМ. СКОРО.':fontcolor=#ffffff:fontsize=27:"
         "x=(w-text_w)/2:y=575,"
         "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        "text='DEМOB RADIO  •  LIVE  •  15.10.2026':fontcolor=#5f6c80:fontsize=17:"
+        "text='DEMOB RADIO  •  LIVE  •  15.10.2026':fontcolor=#5f6c80:fontsize=17:"
         "x=(w-text_w)/2:y=610"
     )
 
